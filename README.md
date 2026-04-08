@@ -1,6 +1,11 @@
 # YOURLS + Cloudflare KV + Worker
 
-Speed up your short links by letting **Cloudflare** remember where each keyword should go. Most visitors get redirected from Cloudflare’s network instead of loading PHP every time. Your **YOURLS database stays in charge**—this only adds a fast copy of the destination URLs on Cloudflare.
+This is a **personal project** for my own YOURLS setup. I wanted two things:
+
+1. **Less load on my database server** — every short-link click used to mean PHP and MySQL work on my host. I’d rather not hit the DB for a simple “where does this keyword go?” lookup when most of that can happen elsewhere.
+2. **Fast redirects** — hand off the redirect at **Cloudflare’s edge** (KV + Worker) so visitors get sent to the long URL quickly, without waiting on my app server for the common case.
+
+YOURLS still **owns** the links: create, edit, delete, and real stats stay in your install. This repo just **syncs** destination URLs to Cloudflare and uses a **small logging endpoint** so click counts still make sense—without turning every redirect into a full YOURLS page load.
 
 ## What’s in this project
 
@@ -32,6 +37,8 @@ flowchart LR
 ```
 
 Usually the Worker runs on the **same domain** as your YOURLS site (with Cloudflare’s orange cloud on). After you set it up, open your homepage, admin, and a test short link to make sure nothing loops or breaks.
+
+**What this changes for load:** when a keyword is already on Cloudflare, the **redirect does not go through YOURLS PHP or a big DB read** for that hop—only a lightweight log request if you enable click logging. If the keyword isn’t synced yet, traffic falls back to your server so nothing breaks.
 
 **Optional:** Cloudflare can label some automated traffic (like monitoring bots). The Worker can skip counting those as “clicks” when that information is available on your plan.
 
