@@ -147,6 +147,24 @@ yourls-cloudflare-kv-sync/
 
 ---
 
+## Push this project to GitHub
+
+1. Create a **new empty repository** on GitHub (no README/license if you are pushing this existing history): [github.com/new](https://github.com/new). Name it e.g. `yourls-cloudflare-kv-sync`.
+2. In a terminal:
+
+   ```bash
+   cd path/to/yourls-cloudflare-kv-sync
+   git remote add origin https://github.com/YOUR_USERNAME/yourls-cloudflare-kv-sync.git
+   git branch -M main
+   git push -u origin main
+   ```
+
+   If your default branch is `master`, use `git push -u origin master` or rename with `git branch -M main` first.
+
+3. Authenticate with GitHub (browser login, PAT, or SSH) when prompted.
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
