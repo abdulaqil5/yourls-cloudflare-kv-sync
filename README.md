@@ -8,7 +8,7 @@ It includes:
 |------|------|
 | **YOURLS plugin** (`user/plugins/cloudflare-kv-sync/`) | On create / edit / delete, writes the keyword to KV via the Cloudflare REST API. |
 | **`log-click.php`** (YOURLS root) | Endpoint the Worker calls to record clicks (increments `clicks` and inserts into the log table) using a shared secret header. |
-| **Cloudflare Worker** (`worker/`) | Looks up `keyword → long URL` in KV, **302 redirect**; optionally logs the click; on miss, **proxies** to your YOURLS origin. |
+| **Cloudflare Worker** (`worker/`) | KV lookup (`YOURLS_LINKS`) → **301** redirect + `Cache-Control`; optional **click logging** (skips some bot categories); **`keyword+`** passes through for YOURLS stats; on KV miss **`fetch(request)`** to origin; origin **404** → custom HTML page. |
 
 ---
 
@@ -28,16 +28,14 @@ flowchart LR
   W -->|GET key| KV
   KV -->|long URL| W
   W -->|POST log + secret| Y
-  W -->|302| U
+  W -->|301| U
   W -->|miss: proxy| Y
   Y --> DB
 ```
 
-**Important:** `ORIGIN_URL` must point to your real YOURLS host in a way that **does not send traffic through this Worker again** (infinite loop). Typical patterns:
+**Deploy pattern:** The Worker is usually routed on the **same hostname** as YOURLS (orange-cloud proxy). Pass-through paths use `fetch(request)`, which Cloudflare forwards to your **origin** (PHP). Ensure routes and Page Rules do not create redirect loops; test `/`, `/admin`, and a known short link after deploy.
 
-- **Different hostname** for origin (e.g. Worker on `go.example.com`, YOURLS on `app.example.com`), or  
-- **DNS “grey cloud”** / direct IP for the origin hostname used only for proxying, or  
-- Same host only if you use **Worker routes** narrowly (e.g. only specific paths) and origin is reachable without re-entering the Worker—test carefully.
+**Bot Management:** `request.cf.botManagement` (verified bot category) is used to **skip click logging** for some categories. Full category data requires a Cloudflare plan / product that exposes Bot Management on Workers; if unavailable, fields are simply undefined and all clicks are logged as usual.
 
 ---
 
@@ -68,7 +66,7 @@ flowchart LR
    - `CF_ACCOUNT_ID`
    - `CF_KV_NAMESPACE_ID`
    - `CF_API_TOKEN`
-   - `LOGGING_SECRET_KEY` — long random string; must match the Worker secret `LOGGING_SECRET` (see below).
+   - `LOGGING_SECRET_KEY` — long random string; must match the Worker secret `LOGGING_SECRET_KEY` (see below).
 
 4. Copy `log-click.php` to the **YOURLS root** (same folder as `yourls-loader.php`).
 
@@ -78,15 +76,11 @@ flowchart LR
 
 1. `cd worker`
 2. `npm install`
-3. Edit `wrangler.toml`:
-   - Set `kv_namespaces.id` to your KV namespace ID.
-   - Set `[vars]`:
-     - `ORIGIN_URL` — base URL of YOURLS (no trailing slash), used when KV misses.
-     - `LOG_ENDPOINT` — full URL to `log-click.php`, e.g. `https://your-domain.com/log-click.php`.
-4. Set the logging secret (same value as `LOGGING_SECRET_KEY` in `config.php`):
+3. Edit `wrangler.toml` and set `kv_namespaces.id` to your KV namespace ID. The KV **binding name** is `YOURLS_LINKS` (must match the Worker code and can match how you name the namespace in the dashboard).
+4. Set the logging secret (same value as `LOGGING_SECRET_KEY` in `user/config.php`):
 
    ```bash
-   npx wrangler secret put LOGGING_SECRET
+   npx wrangler secret put LOGGING_SECRET_KEY
    ```
 
 5. Deploy:
@@ -95,11 +89,13 @@ flowchart LR
    npm run deploy
    ```
 
-6. Attach the Worker to your short-link hostname (**Workers & Pages** → your worker → **Triggers** → **Routes**), e.g. `short.example.com/*`, or use a **Custom Domain** on the Worker.
+6. Attach the Worker to your zone (**Triggers** → **Routes** or a **Custom Domain** on the Worker), typically `example.com/*` or your short domain.
+
+The Worker posts clicks to `https://<request-hostname>/log-click.php` with header `X-Auth-Key: <LOGGING_SECRET_KEY>`, so the hostname that serves the Worker must also resolve `log-click.php` on your origin (usual single-site setup).
 
 ### Local development
 
-Copy `worker/.dev.vars.example` to `worker/.dev.vars` and set `LOGGING_SECRET`. Run `npm run dev`.
+Copy `worker/.dev.vars.example` to `worker/.dev.vars` and set `LOGGING_SECRET_KEY`. Run `npm run dev`.
 
 ---
 
@@ -107,8 +103,11 @@ Copy `worker/.dev.vars.example` to `worker/.dev.vars` and set `LOGGING_SECRET`. 
 
 - **New / updated short URL:** Plugin `PUT`s the long URL as plain text to KV under the keyword.
 - **Deleted short URL:** Plugin `DELETE`s that key from KV.
-- **Click:** Worker reads KV → redirect; in the background it `POST`s JSON to `log-click.php` with header `X-Auth-Key: <LOGGING_SECRET_KEY>`.
-- **KV miss:** Worker proxies the request to `ORIGIN_URL` so YOURLS can still handle the request (e.g. not yet synced or edge delay).
+- **Root, `/admin`, `yourls-api.php`, static assets:** Request is passed with `fetch(request)` to the origin (no KV redirect).
+- **KV hit:** **301** redirect to the long URL, `Cache-Control: public, max-age=3600`, `X-Robots-Tag: noindex`. Click logging runs in the background unless the request is classified as a denied bot category (when Bot Management data is present).
+- **`/keyword+` (stats):** Passes through to origin so YOURLS can show statistics; no edge redirect.
+- **KV miss:** `fetch(request)` to origin; if the origin returns **404**, the Worker responds with the **custom HTML** 404 page defined in `worker/src/index.js` (edit `CUSTOM_404_HTML` for your brand).
+- **Click logging:** `POST` to `/log-click.php` with `X-Auth-Key` matching `LOGGING_SECRET_KEY`.
 
 ---
 
@@ -116,7 +115,7 @@ Copy `worker/.dev.vars.example` to `worker/.dev.vars` and set `LOGGING_SECRET`. 
 
 - Keep `CF_API_TOKEN` and `LOGGING_SECRET_KEY` private. Rotate them if exposed.
 - `log-click.php` rejects requests without the correct `X-Auth-Key`.
-- Prefer **HTTPS** everywhere for `LOG_ENDPOINT` and `ORIGIN_URL`.
+- Prefer **HTTPS** for your site; the Worker uses `https://` for `log-click.php`.
 
 ---
 
