@@ -6,7 +6,7 @@ Speed up your short links by letting **Cloudflare** remember where each keyword 
 
 | Piece | What it does |
 |--------|----------------|
-| **YOURLS plugin** (`user/plugins/cloudflare-kv-sync/`) | When you add, change, or remove a short link, it updates the copy stored on Cloudflare. |
+| **YOURLS plugin** (`cloudflare-kv-sync/`) | When you add, change, or remove a short link, it updates the copy stored on Cloudflare. |
 | **`log-click.php`** (in your YOURLS root folder) | A small script Cloudflare calls so clicks still show up in YOURLS (counts and stats). Protected with a secret key. |
 | **Cloudflare Worker** (`worker/`) | Looks up the short keyword, sends the visitor to the long URL, and can log the click. If something isn’t in Cloudflare’s copy yet, it asks your server as usual. |
 
@@ -56,7 +56,7 @@ Usually the Worker runs on the **same domain** as your YOURLS site (with Cloudfl
 
 ## Step 2 — YOURLS: plugin and config
 
-1. Copy the folder `user/plugins/cloudflare-kv-sync/` into your YOURLS `user/plugins/` folder.
+1. Copy the `cloudflare-kv-sync` folder from this repository into your YOURLS `user/plugins/` folder (you should end up with `user/plugins/cloudflare-kv-sync/` on your server).
 2. In YOURLS admin, **activate** the plugin “Cloudflare KV Sync for YOURLS”.
 3. Open `config-snippet.php` in this repo and copy the settings into your `user/config.php`. Fill in your real IDs and token.  
    - Pick a **long random** value for `LOGGING_SECRET_KEY` — you’ll use the **same** value again when you set the Worker secret.  
@@ -125,8 +125,8 @@ yourls-cloudflare-kv-sync/
 ├── LICENSE
 ├── config-snippet.php          # Settings to copy into user/config.php
 ├── log-click.php               # Copy into YOURLS root
-├── user/plugins/cloudflare-kv-sync/
-│   └── plugin.php
+├── cloudflare-kv-sync/
+│   └── plugin.php              # Copy folder into YOURLS user/plugins/
 └── worker/
     ├── package.json
     ├── wrangler.toml
