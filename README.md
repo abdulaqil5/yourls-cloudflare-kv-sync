@@ -106,7 +106,7 @@ Copy `worker/.dev.vars.example` to `worker/.dev.vars` and set `LOGGING_SECRET_KE
 - **Root, `/admin`, `yourls-api.php`, static assets:** Request is passed with `fetch(request)` to the origin (no KV redirect).
 - **KV hit:** **301** redirect to the long URL, `Cache-Control: public, max-age=3600`, `X-Robots-Tag: noindex`. Click logging runs in the background unless the request is classified as a denied bot category (when Bot Management data is present).
 - **`/keyword+` (stats):** Passes through to origin so YOURLS can show statistics; no edge redirect.
-- **KV miss:** `fetch(request)` to origin; if the origin returns **404**, the Worker responds with the **custom HTML** 404 page defined in `worker/src/index.js` (edit `CUSTOM_404_HTML` for your brand).
+- **KV miss:** `fetch(request)` to origin; if the origin returns **404**, the Worker responds with a **small generic HTML** page (`CUSTOM_404_HTML` in `worker/src/index.js`; edit there if you want custom styling).
 - **Click logging:** `POST` to `/log-click.php` with `X-Auth-Key` matching `LOGGING_SECRET_KEY`.
 
 ---
@@ -143,24 +143,6 @@ yourls-cloudflare-kv-sync/
     ├── wrangler.toml
     └── src/index.js
 ```
-
----
-
-## Push this project to GitHub
-
-1. Create a **new empty repository** on GitHub (no README/license if you are pushing this existing history): [github.com/new](https://github.com/new). Name it e.g. `yourls-cloudflare-kv-sync`.
-2. In a terminal:
-
-   ```bash
-   cd path/to/yourls-cloudflare-kv-sync
-   git remote add origin https://github.com/YOUR_USERNAME/yourls-cloudflare-kv-sync.git
-   git branch -M main
-   git push -u origin main
-   ```
-
-   If your default branch is `master`, use `git push -u origin master` or rename with `git branch -M main` first.
-
-3. Authenticate with GitHub (browser login, PAT, or SSH) when prompted.
 
 ---
 
