@@ -1,4 +1,4 @@
-# YOURLS + Cloudflare KV + Worker
+# Edge redirects for YOURLS — Cloudflare KV & Worker
 
 This is a **personal project** for my own YOURLS setup. I wanted two things:
 
