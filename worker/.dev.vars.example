@@ -1,0 +1,2 @@
+# Copy to .dev.vars for `npm run dev` (never commit .dev.vars)
+LOGGING_SECRET=your_shared_secret_same_as_LOGGING_SECRET_KEY_in_config_php

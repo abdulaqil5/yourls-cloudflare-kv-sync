@@ -1,0 +1,18 @@
+# Copy to wrangler.toml and fill in values, or use `wrangler secret put` / dashboard for secrets.
+name = "yourls-kv-redirect"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+[[kv_namespaces]]
+binding = "KV"
+id = "YOUR_KV_NAMESPACE_ID"
+
+# Public vars (safe in repo if non-sensitive). Use wrangler.toml vars or Dashboard → Settings → Variables.
+[vars]
+# Full URL of your YOURLS site, used when KV misses (fallback proxy) and must NOT route through this Worker again.
+ORIGIN_URL = "https://yours.example.com"
+# Full URL to log-click.php on your server (HTTPS).
+LOG_ENDPOINT = "https://yours.example.com/log-click.php"
+
+# Set via: wrangler secret put LOGGING_SECRET
+# (same value as LOGGING_SECRET_KEY in user/config.php)
