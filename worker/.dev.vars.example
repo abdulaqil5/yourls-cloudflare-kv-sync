@@ -1,2 +1,8 @@
 # Copy to .dev.vars for `npm run dev` (never commit .dev.vars)
 LOGGING_SECRET_KEY=same_value_as_LOGGING_SECRET_KEY_in_user_config_php
+
+# Optional customization overrides (comma-separated):
+# RESERVED_PATHS=about,contact,pricing,terms,privacy,blog
+# BOT_CATEGORY_DENYLIST="Monitoring & Analytics,Security Scanner,Advertising,Security,Advertising & Marketing"
+# LOGGING_ENDPOINT="/cf-click-logger.php"
+

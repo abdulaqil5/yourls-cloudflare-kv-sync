@@ -7,6 +7,17 @@ compatibility_date = "2024-11-01"
 binding = "YOURLS_LINKS"
 id = "YOUR_KV_NAMESPACE_ID"
 
+# [vars]
+# Optional: customize reserved origin paths (comma-separated, bypasses KV)
+# RESERVED_PATHS = "about,contact,pricing,terms,privacy,blog"
+#
+# Optional: customize Cloudflare bot categories to exclude from click logging (comma-separated)
+# BOT_CATEGORY_DENYLIST = "Monitoring & Analytics,Security Scanner,Advertising,Security,Advertising & Marketing"
+#
+# Optional: customize origin click logging endpoint (defaults to /cf-click-logger.php)
+# LOGGING_ENDPOINT = "/cf-click-logger.php"
+
 # Same value as LOGGING_SECRET_KEY in user/config.php (do not commit real values).
 # Set in production: npx wrangler secret put LOGGING_SECRET_KEY
 # Local dev: copy .dev.vars.example to .dev.vars
+
