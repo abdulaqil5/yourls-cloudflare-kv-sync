@@ -61,6 +61,9 @@ const DEFAULT_BOT_CATEGORY_DENYLIST = new Set([
  * Customization options:
  * - Option A: Add paths to the Set below.
  * - Option B: Set `RESERVED_PATHS` environment variable in wrangler.toml or Cloudflare Dashboard (comma-separated).
+ * - Option C: In Cloudflare Dashboard -> Domain -> Workers Routes, add a route (e.g., yourdomain.com/blog/*)
+ *             and set Worker to "None" ("Workers are disabled on this route") for zero-invocation bypass.
+ *             Docs: https://developers.cloudflare.com/workers/configuration/routing/routes/
  */
 const DEFAULT_RESERVED_PATHS = new Set([
   "",

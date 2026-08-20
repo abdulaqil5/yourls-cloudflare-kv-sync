@@ -1,5 +1,7 @@
 # Edge Redirects for YOURLS — Cloudflare KV & Worker
 
+> **Note:** This is a personal project created for my own YOURLS setup to achieve sub-millisecond edge redirects, reduce origin server load to near zero, and maintain clean, accurate click analytics.
+
 High-performance, ultra-low-latency edge redirection and analytics synchronization system for [YOURLS](https://yourls.org/) powered by Cloudflare Workers and Workers KV.
 
 ---
@@ -178,6 +180,16 @@ Optionally change the default logging bridge filename:
 [vars]
 LOGGING_ENDPOINT = "/cf-click-logger.php"
 ```
+
+### 4. Bypassing Specific Folders via Cloudflare Dashboard (Zero-Invocation Bypass)
+If you have folders, sub-directories, or applications on the same domain (e.g., `/blog/*`, `/app/*`, `/shop/*`, `/wp-admin/*`) that you want to completely bypass the Worker at Cloudflare's network level:
+1. In the **Cloudflare Dashboard**, select your **Domain**.
+2. Navigate to **Workers Routes** → **Add Route**.
+3. Enter the route pattern you want to bypass (e.g. `yourdomain.com/blog/*` or `yourdomain.com/folder/*`).
+4. Set **Worker** to **`None`** (Cloudflare will indicate: *"Workers are disabled on this route"*).
+5. Cloudflare will automatically route requests for that path directly to your origin server without invoking the Worker.
+
+> For complete details on route matching rules and precedence, see the official [Cloudflare Workers Routes Documentation](https://developers.cloudflare.com/workers/configuration/routing/routes/).
 
 ---
 
