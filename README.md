@@ -1,6 +1,6 @@
 # Edge Redirects for YOURLS — Cloudflare KV & Worker
 
-> **Note:** This is a personal project created for my own YOURLS setup to achieve sub-millisecond edge redirects, reduce origin server load to near zero, and maintain clean, accurate click analytics.
+> **Note:** This is a personal project created for my own YOURLS setup to achieve sub-millisecond edge redirects, reduce origin server load to near zero, and maintain clean, accurate click analytics. Feel free to clone, fork, and improvise or adapt the code to suit your own needs!
 
 High-performance, ultra-low-latency edge redirection and analytics synchronization system for [YOURLS](https://yourls.org/) powered by Cloudflare Workers and Workers KV.
 
