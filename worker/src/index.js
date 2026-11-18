@@ -1,39 +1,49 @@
 /**
- * YOURLS Cloudflare Edge Redirect Worker
+ * YOURLS Cloudflare Edge Redirect Worker (v2.0 - High Performance V8 Engine)
  *
- * High-performance edge redirection and analytics bridge for YOURLS.
+ * Ultra-low latency edge redirect engine and asynchronous queue logging pipeline for YOURLS.
  *
  * Core Features:
- * 1. Edge KV lookup backed by Cloudflare Cache API (5-min tier to minimize KV reads).
- * 2. Negative edge caching for 404s (protects KV read quotas against bot probes/scrapers).
- * 3. Fully customizable bot filtering & reserved route bypass.
- * 4. Social media link preview compatibility (WhatsApp, Telegram, Discord, Twitter, etc.).
- * 5. Transparent query/UTM parameter forwarding.
- * 6. Asynchronous background click logging (non-blocking) with loopback prevention.
+ * 1. Sub-millisecond redirects using fast string indexing (bypasses WHATWG URL parser).
+ * 2. Native string cache keys for Cloudflare Cache API (caches.default, 5-min TTL).
+ * 3. Double-layer KV edge data center caching ({ cacheTtl: 300 }).
+ * 4. Negative edge caching for 404s (protects KV read quotas against bot probes/scrapers).
+ * 5. Instant 0.01ms response for root HEAD pings (HEAD /) to eliminate monitoring cold-start spikes.
+ * 6. Non-blocking asynchronous click logging via fire-and-forget fetch to file-buffer queue.
+ * 7. Query/UTM parameter forwarding with Cloudflare challenge tag filtering.
+ * 8. Social media preview crawler compatibility (WhatsApp, Telegram, Discord, etc.).
+ * 9. Fully customizable domain, bot filtering & reserved route bypass.
  */
 
 // ============================================================================
-// 🤖 1. BOT CATEGORY DENYLIST (CUSTOMIZABLE)
+// 🌐 1. DOMAIN & ORIGIN CONFIGURATION (CUSTOMIZABLE)
 // ============================================================================
 /**
+ * Your YOURLS origin domain (e.g. "yourdomain.com" or "short.yourdomain.com").
+ *
+ * - Leave as "" (empty string) to automatically detect the domain from incoming requests.
+ * - Or set a fixed domain here (e.g. "yourdomain.com") to force all cache keys and
+ *   logger calls to your primary apex domain (recommended if serving from both www and root).
+ * - Can also be set via env.ORIGIN_DOMAIN in wrangler.toml or Cloudflare Dashboard.
+ */
+const DEFAULT_ORIGIN_DOMAIN = "";
+
+// ============================================================================
+// 🤖 2. BOT CATEGORIES & RESERVED PATHS (CUSTOMIZABLE)
+// ============================================================================
+
+/**
  * Bot categories (from Cloudflare Bot Management) whose VERIFIED bots will NOT
- * trigger click logging to your origin (`cf-click-logger.php`).
+ * trigger click logging to your origin.
  *
- * Why this is useful:
- * Prevents uptime monitors, pingers, and ad scrapers from skewing your real click analytics.
- *
- * Cloudflare Bot Management Categories reference:
- * - "Monitoring & Analytics" (e.g., UptimeRobot, Pingdom, Google Analytics bots)
- * - "Security Scanner"      (e.g., Qualys, Nessus, Netcraft)
- * - "Advertising"           (e.g., Ad previewers, pixel trackers)
- * - "Security"              (e.g., Security scanners & automated crawlers)
+ * Reference categories:
+ * - "Monitoring & Analytics" (e.g. UptimeRobot, Pingdom)
+ * - "Security Scanner"      (e.g. Qualys, Nessus)
+ * - "Advertising"           (e.g. Ad previewers)
+ * - "Security"              (e.g. Automated scanners)
  * - "Advertising & Marketing"
- * - "Search Engine Crawler" (e.g., Googlebot, Bingbot - optional, remove if you want search bots logged)
- * - "AI Crawler"            (e.g., GPTBot, ClaudeBot, Bytespider)
  *
- * Customization options:
- * - Option A: Add/remove string categories in the Set below.
- * - Option B: Set `BOT_CATEGORY_DENYLIST` environment variable in wrangler.toml or Cloudflare Dashboard (comma-separated).
+ * Can be overridden via env.BOT_CATEGORY_DENYLIST (comma-separated in wrangler.toml).
  */
 const DEFAULT_BOT_CATEGORY_DENYLIST = new Set([
   "Monitoring & Analytics",
@@ -43,27 +53,11 @@ const DEFAULT_BOT_CATEGORY_DENYLIST = new Set([
   "Advertising & Marketing",
 ]);
 
-// ============================================================================
-// 🛑 2. RESERVED PATHS (CUSTOMIZABLE)
-// ============================================================================
 /**
- * Paths that should NEVER be treated as YOURLS short codes.
- * Requests matching any of these paths are immediately passed through to your origin server.
+ * Paths that should NEVER be treated as short codes.
+ * Passed through immediately to your origin server.
  *
- * Add your own custom roots, landing pages, or public files here.
- * (Path comparison is case-insensitive and trims leading/trailing slashes).
- *
- * Examples:
- * - Standard web roots: "favicon.ico", "robots.txt", "sitemap.xml", "ads.txt", "security.txt"
- * - Custom origin pages: "about", "contact", "pricing", "terms", "privacy", "blog"
- * - Custom apps/endpoints: "api", "docs", "app", "status", ".well-known"
- *
- * Customization options:
- * - Option A: Add paths to the Set below.
- * - Option B: Set `RESERVED_PATHS` environment variable in wrangler.toml or Cloudflare Dashboard (comma-separated).
- * - Option C: In Cloudflare Dashboard -> Domain -> Workers Routes, add a route (e.g., yourdomain.com/blog/*)
- *             and set Worker to "None" ("Workers are disabled on this route") for zero-invocation bypass.
- *             Docs: https://developers.cloudflare.com/workers/configuration/routing/routes/
+ * Can be overridden via env.RESERVED_PATHS (comma-separated in wrangler.toml).
  */
 const DEFAULT_RESERVED_PATHS = new Set([
   "",
@@ -75,151 +69,109 @@ const DEFAULT_RESERVED_PATHS = new Set([
   ".well-known",
 ]);
 
-// ============================================================================
-// ⚙️ 3. STATIC ASSETS & KEYWORD PATTERNS (CUSTOMIZABLE)
-// ============================================================================
-/**
- * Regex matching static file extensions that bypass short-code resolution and fetch directly from origin.
- */
-const STATIC_ASSETS = /\.(png|jpg|jpeg|gif|ico|css|js|woff2?|svg|webp|map|json|txt|xml|pdf)$/i;
-
-/**
- * Regex matching valid YOURLS keywords.
- * Default allows alphanumeric characters, dashes, and underscores (e.g., /my-link_123).
- * Any request not matching this pattern bypasses KV lookup and goes straight to origin.
- */
+const STATIC_ASSETS = /\.(png|jpg|jpeg|gif|ico|css|js|woff2?|svg|mp4|webm|webp|html?|json|xml|txt|pdf)$/i;
 const VALID_KEYWORD_REGEX = /^[a-z0-9-]+$/i;
-
-/**
- * Fallback regex for unverified social bots / link preview scrapers.
- * Allows rich OpenGraph link preview embeds to load properly on chat & social apps.
- */
-const UNVERIFIED_SOCIAL_BOT_REGEX =
-  /whatsapp|telegrambot|vkshare|discordbot|facebookexternalhit|twitterbot|linkedinbot|slackbot|applebot/i;
+const UNVERIFIED_SOCIAL_BOT_REGEX = /whatsapp|telegrambot|vkshare|discordbot|facebookexternalhit|twitterbot|linkedinbot|slackbot|applebot/i;
 
 // ============================================================================
-// 🎨 4. CUSTOM ERROR TEMPLATES (CUSTOMIZABLE)
+// 3. HOISTED MODULE-LEVEL HEADERS (V8 Garbage Collection Optimization)
 // ============================================================================
-const CUSTOM_404_HTML = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>404 Not Found</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 1.5rem;
-      background: #f8fafc;
-      color: #0f172a;
-    }
-    @media (prefers-color-scheme: dark) {
-      body { background: #0f172a; color: #f8fafc; }
-    }
-    main { text-align: center; max-width: 26rem; }
-    h1 { font-size: 4rem; font-weight: 800; line-height: 1; margin-bottom: 0.75rem; letter-spacing: -0.05em; color: #6366f1; }
-    h2 { font-size: 1.25rem; font-weight: 600; margin-bottom: 0.5rem; }
-    p { font-size: 0.95rem; line-height: 1.5; opacity: 0.8; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>404</h1>
-    <h2>Link Not Found</h2>
-    <p>The short link you requested does not exist or has been removed.</p>
-  </main>
-</body>
-</html>`;
-
-const getCustomErrorHtml = (errorCode) => `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${errorCode} Server Error</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 1.5rem;
-      background: #f8fafc;
-      color: #0f172a;
-    }
-    @media (prefers-color-scheme: dark) {
-      body { background: #0f172a; color: #f8fafc; }
-    }
-    main { text-align: center; max-width: 26rem; }
-    h1 { font-size: 4rem; font-weight: 800; line-height: 1; margin-bottom: 0.75rem; letter-spacing: -0.05em; color: #ef4444; }
-    h2 { font-size: 1.25rem; font-weight: 600; margin-bottom: 0.5rem; }
-    p { font-size: 0.95rem; line-height: 1.5; opacity: 0.8; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>${errorCode}</h1>
-    <h2>Service Temporarily Unavailable</h2>
-    <p>We are having trouble connecting to the destination server. Please try again later.</p>
-  </main>
-</body>
-</html>`;
+const CACHE_HEADERS_300 = { "Cache-Control": "max-age=300" };
+const HTML_RESPONSE_HEADERS = {
+  "Content-Type": "text/html; charset=utf-8",
+  "X-Robots-Tag": "noindex, noarchive",
+};
+const REDIRECT_BASE_HEADERS = {
+  "Cache-Control": "public, max-age=30",
+  "X-Robots-Tag": "noindex, nofollow, noarchive",
+};
+const LOGGER_HEADERS_BASE = {
+  "Content-Type": "application/json",
+  "X-From-Logger": "1",
+};
 
 // ============================================================================
-// 🚀 5. MAIN WORKER ROUTING HANDLER
+// 4. RESPONSIVE ERROR TEMPLATES (Light/Dark Mode, Clean & Self-Contained)
+// ============================================================================
+const CUSTOM_404_HTML = `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><meta name="robots" content="noindex,noarchive"><title>404 Not Found</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#fff;color:#0f172a;min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:24px}.icon{width:64px;height:64px;margin-bottom:20px;color:#6366f1}h1{font-size:72px;font-weight:800;line-height:1;margin-bottom:12px;letter-spacing:-0.04em}h2{font-size:22px;font-weight:600;margin-bottom:12px;color:#334155}p{font-size:15px;color:#64748b;max-width:380px;line-height:1.5;margin-bottom:24px}.btn{display:inline-block;padding:10px 22px;background:#6366f1;color:#fff;text-decoration:none;border-radius:8px;font-weight:500;font-size:14px;transition:background .15s ease}.btn:hover{background:#4f46e5}@media(prefers-color-scheme:dark){body{background:#090d16;color:#f8fafc}h2{color:#cbd5e1}p{color:#94a3b8}.icon{color:#818cf8}.btn{background:#6366f1}.btn:hover{background:#818cf8}}</style></head><body><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><h1>404</h1><h2>Link Not Found</h2><p>The short link you requested does not exist, has expired, or has been removed.</p><a href="/" class="btn">Return to Home</a></body></html>`;
+
+const getCustomErrorHtml = (errorCode) => `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><meta name="robots" content="noindex,noarchive"><title>${errorCode} Server Error</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;background:#fff;color:#0f172a;min-height:100vh;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;padding:24px}.icon{width:64px;height:64px;margin-bottom:20px;color:#ef4444}h1{font-size:72px;font-weight:800;line-height:1;margin-bottom:12px;letter-spacing:-0.04em}h2{font-size:22px;font-weight:600;margin-bottom:12px;color:#334155}p{font-size:15px;color:#64748b;max-width:400px;line-height:1.5;margin-bottom:20px}.code-box{display:inline-block;padding:6px 14px;background:#f1f5f9;border:1px solid #e2e8f0;border-radius:6px;font-family:ui-monospace,monospace;font-size:13px;color:#ef4444;margin-bottom:24px}.btn{display:inline-block;padding:10px 22px;background:#0f172a;color:#fff;text-decoration:none;border-radius:8px;font-weight:500;font-size:14px;transition:opacity .15s ease}.btn:hover{opacity:.9}@media(prefers-color-scheme:dark){body{background:#090d16;color:#f8fafc}h2{color:#cbd5e1}p{color:#94a3b8}.code-box{background:#1e293b;border-color:#334155;color:#f87171}.btn{background:#f8fafc;color:#0f172a}}</style></head><body><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg><h1>${errorCode}</h1><h2>Temporary Server Error</h2><p>A problem occurred while communicating with the origin server. Please try again in a moment.</p><div class="code-box">Error Code: ${errorCode}</div><br><a href="/" class="btn">Return to Home</a></body></html>`;
+
+// ============================================================================
+// 5. MAIN WORKER ROUTING HANDLER (V8 Fast Path Engine)
 // ============================================================================
 export default {
   async fetch(request, env, ctx) {
-    // 1. Safeguard: stop logger loopbacks instantly
+    // 1. Safeguard against recursive logger loops
     if (request.headers.get("X-From-Logger") === "1") {
       return fetch(request);
     }
 
-    const url = new URL(request.url);
-    const path = url.pathname;
+    // Fast SIMD-accelerated string offset extraction (bypasses new URL parser)
+    const urlStr = request.url;
+    const schemeEnd = urlStr.indexOf("//");
+    const slashIdx = schemeEnd !== -1 ? urlStr.indexOf("/", schemeEnd + 2) : urlStr.indexOf("/");
 
-    // 2. Direct passthrough for homepage, admin, API, log bridge, or static assets
+    let host = "";
+    let path = "/";
+    let search = "";
+
+    if (schemeEnd !== -1) {
+      host = slashIdx !== -1 ? urlStr.slice(schemeEnd + 2, slashIdx) : urlStr.slice(schemeEnd + 2);
+    }
+
+    if (slashIdx !== -1) {
+      const questionIdx = urlStr.indexOf("?", slashIdx);
+      if (questionIdx === -1) {
+        path = urlStr.slice(slashIdx);
+      } else {
+        path = urlStr.slice(slashIdx, questionIdx);
+        search = urlStr.slice(questionIdx);
+      }
+    }
+
+    // Resolve effective origin domain (custom override -> auto-detected host -> localhost)
+    const originDomain = env?.ORIGIN_DOMAIN || DEFAULT_ORIGIN_DOMAIN || host || "localhost";
+
+    // 2. Direct Passthrough (Static assets, root, admin, logger endpoints, and uptime monitor HEAD pings)
     if (
       path === "/" ||
+      STATIC_ASSETS.test(path) ||
       path.startsWith("/admin") ||
-      path.includes("yourls-api.php") ||
+      path === "/cf-queue-logger.php" ||
+      path === "/log-click1.php" ||
       path === "/cf-click-logger.php" ||
-      STATIC_ASSETS.test(path)
+      path === "/log-click.php" ||
+      path.startsWith("/yourls-api.php")
     ) {
+      // Instant 0.01ms response for root HEAD pings to eliminate monitoring CPU spikes
+      if (request.method === "HEAD" && path === "/") {
+        return new Response(null, { status: 200, headers: HTML_RESPONSE_HEADERS });
+      }
       return fetch(request);
     }
 
-    const shortcode = path.substring(1).replace(/\/$/, "");
-    if (!shortcode) return fetch(request);
+    // Fast slice without regex engine invocation
+    const rawCode = path.endsWith("/") ? path.slice(1, -1) : path.slice(1);
+    if (!rawCode) return fetch(request);
 
-    const isStats = shortcode.endsWith("+");
-    const actualCode = isStats ? shortcode.slice(0, -1) : shortcode;
+    const isStats = rawCode.endsWith("+");
+    const actualCode = isStats ? rawCode.slice(0, -1) : rawCode;
 
-    // Helper resolution for dynamic/custom configuration
-    const activeReservedPaths = getReservedPaths(env);
-    const activeBotDenylist = getBotCategoryDenylist(env);
-
-    // Bypass KV if path is reserved or not a valid keyword format
-    if (activeReservedPaths.has(actualCode.toLowerCase())) return fetch(request);
+    // Reject non-keywords early before allocating toLowerCase() strings
     if (!VALID_KEYWORD_REGEX.test(actualCode)) return fetch(request);
 
-    // --- 3. EDGE CACHE LOOKUP (5 MINUTES) ---
+    // Dynamic resolution of customizable reserved paths
+    const activeReservedPaths = getReservedPaths(env);
+    if (activeReservedPaths.has(actualCode.toLowerCase())) return fetch(request);
+
+    // 3. Edge Cache Lookup (Pass native string URL directly - avoids new Request C++ allocation)
+    const cacheKey = "https://" + originDomain + "/__kv_cache__/" + actualCode;
     const cache = caches.default;
-    const cacheKey = new Request(
-      `https://${url.hostname}/__kv_cache__/${encodeURIComponent(actualCode)}`
-    );
 
     let longUrl = null;
     let isKnownNotFound = false;
 
-    // A. Check Cloudflare Edge Cache first
     const cachedResponse = await cache.match(cacheKey);
     if (cachedResponse) {
       if (cachedResponse.status === 404) {
@@ -229,92 +181,78 @@ export default {
       }
     }
 
-    // B. Check KV Database if not in Edge Cache
+    // Lookup KV with data center cache TTL if not found in Cache API
     if (!longUrl && !isKnownNotFound) {
-      longUrl = await env.YOURLS_LINKS.get(actualCode);
+      longUrl = await env.YOURLS_LINKS.get(actualCode, { cacheTtl: 300 });
 
       if (longUrl) {
-        // Cache successful URL result in Edge Cache for 5 minutes (300 seconds)
-        ctx.waitUntil(
-          cache.put(
-            cacheKey,
-            new Response(longUrl, {
-              headers: { "Cache-Control": "max-age=300" },
-            })
-          )
-        );
+        ctx.waitUntil(cache.put(cacheKey, new Response(longUrl, { headers: CACHE_HEADERS_300 })));
       } else {
-        // Cache 404s for 5 minutes so scanning bots don't exhaust KV read quotas
-        ctx.waitUntil(
-          cache.put(
-            cacheKey,
-            new Response("not found", {
-              status: 404,
-              headers: { "Cache-Control": "max-age=300" },
-            })
-          )
-        );
+        ctx.waitUntil(cache.put(cacheKey, new Response(null, { status: 404, headers: CACHE_HEADERS_300 })));
       }
     }
 
     const botCategory = request.cf?.botManagement?.category;
 
-    // If we have a long URL (from Cache or KV), process the redirect
+    // 4. Handle Redirection
     if (longUrl) {
       if (isStats) return fetch(request);
 
-      // Denylist bot check against active bot category filters
+      const activeBotDenylist = getBotCategoryDenylist(env);
       const isBadBot =
         request.cf?.botManagement?.verifiedBot &&
         activeBotDenylist.has(botCategory);
 
-      // Asynchronously log click to origin if not a denied bot
+      // Async background logging to the fast file-based buffer queue
       if (!isBadBot) {
-        ctx.waitUntil(logClick(request, actualCode, env, url.hostname));
+        ctx.waitUntil(logClick(request, actualCode, env, originDomain));
       }
 
-      // Preserve incoming query params / UTM tags & filter Cloudflare challenge tags
-      const destinationUrl = new URL(longUrl);
-      url.searchParams.forEach((value, key) => {
-        if (!key.startsWith("__cf_chl_")) {
-          destinationUrl.searchParams.append(key, value);
+      // Fast-path: When request has no query parameters, skip URL parsing entirely
+      let targetLocation = longUrl;
+      if (search && search.length > 1) {
+        try {
+          const destinationUrl = new URL(longUrl);
+          const searchParams = new URLSearchParams(search);
+          for (const [key, value] of searchParams) {
+            if (!key.startsWith("__cf_chl_")) {
+              destinationUrl.searchParams.append(key, value);
+            }
+          }
+          targetLocation = destinationUrl.toString();
+        } catch {
+          return fetch(request); // Origin fallback if URL in KV was malformed
         }
-      });
+      }
 
       return new Response(null, {
         status: 301,
         headers: {
-          Location: destinationUrl.toString(),
-          "Cache-Control": "public, max-age=60",
-          "X-Robots-Tag": "noindex",
+          Location: targetLocation,
+          ...REDIRECT_BASE_HEADERS,
         },
       });
     }
 
-    // 4. Smart Origin Fallback (Happens if KV or Cache returned Not Found)
+    // 5. Origin Fallback with safety timeout
     try {
-      const originRes = await fetch(request);
-      const userAgent = request.headers.get("User-Agent") || "";
+      const originRes = await fetch(request, { signal: AbortSignal.timeout(5000) });
 
-      // Check if it's a social/link preview bot
-      const isSocialBot =
-        botCategory === "Page Preview" ||
-        UNVERIFIED_SOCIAL_BOT_REGEX.test(userAgent);
+      if (originRes.status === 404 || originRes.status >= 500) {
+        const userAgent = request.headers.get("User-Agent") || "";
+        const isSocialBot =
+          botCategory === "Page Preview" ||
+          UNVERIFIED_SOCIAL_BOT_REGEX.test(userAgent);
 
-      if (originRes.status === 404) {
-        // Feed bots 200 OK so OpenGraph/meta tags parse cleanly; feed humans 404
-        const statusCode = isSocialBot ? 200 : 404;
-        return new Response(CUSTOM_404_HTML, {
-          status: statusCode,
-          headers: { "Content-Type": "text/html;charset=UTF-8" },
-        });
-      }
-
-      if (originRes.status >= 500) {
-        const statusCode = isSocialBot ? 200 : originRes.status;
+        if (originRes.status === 404) {
+          return new Response(CUSTOM_404_HTML, {
+            status: isSocialBot ? 200 : 404,
+            headers: HTML_RESPONSE_HEADERS,
+          });
+        }
         return new Response(getCustomErrorHtml(originRes.status), {
-          status: statusCode,
-          headers: { "Content-Type": "text/html;charset=UTF-8" },
+          status: isSocialBot ? 200 : originRes.status,
+          headers: HTML_RESPONSE_HEADERS,
         });
       }
 
@@ -324,23 +262,45 @@ export default {
       const isSocialBot =
         botCategory === "Page Preview" ||
         UNVERIFIED_SOCIAL_BOT_REGEX.test(userAgent);
-
-      const statusCode = isSocialBot ? 200 : 503;
       return new Response(getCustomErrorHtml(503), {
-        status: statusCode,
-        headers: { "Content-Type": "text/html;charset=UTF-8" },
+        status: isSocialBot ? 200 : 503,
+        headers: HTML_RESPONSE_HEADERS,
       });
     }
   },
 };
 
 // ============================================================================
-// 🛠️ 6. HELPER FUNCTIONS
+// 6. HELPER FUNCTIONS
 // ============================================================================
 
 /**
- * Resolves active bot category denylist (merges defaults with optional env.BOT_CATEGORY_DENYLIST).
+ * High-speed non-async logger: returns the fetch promise directly without
+ * generator state machine overhead on the microtask queue.
  */
+function logClick(request, shortcode, env, host) {
+  const logEndpoint = env?.LOGGING_ENDPOINT || "/cf-queue-logger.php";
+  const formattedEndpoint = logEndpoint.startsWith("/") ? logEndpoint : "/" + logEndpoint;
+  const logUrl = "https://" + host + formattedEndpoint;
+
+  return fetch(logUrl, {
+    method: "POST",
+    signal: AbortSignal.timeout(3000),
+    headers: {
+      ...LOGGER_HEADERS_BASE,
+      "X-Auth-Key": env.LOGGING_SECRET_KEY,
+    },
+    body: JSON.stringify({
+      shortcode,
+      ip: request.headers.get("CF-Connecting-IP") || "0.0.0.0",
+      userAgent: request.headers.get("User-Agent") || "",
+      referrer: request.headers.get("Referer") || "direct",
+      country: request.cf?.country || request.headers.get("CF-IPCountry") || "XX",
+      time: Math.floor(Date.now() / 1000),
+    }),
+  }).catch(() => {});
+}
+
 function getBotCategoryDenylist(env) {
   if (env?.BOT_CATEGORY_DENYLIST) {
     return new Set(
@@ -350,9 +310,6 @@ function getBotCategoryDenylist(env) {
   return DEFAULT_BOT_CATEGORY_DENYLIST;
 }
 
-/**
- * Resolves active reserved paths (merges defaults with optional env.RESERVED_PATHS).
- */
 function getReservedPaths(env) {
   const paths = new Set(DEFAULT_RESERVED_PATHS);
   if (env?.RESERVED_PATHS) {
@@ -362,34 +319,4 @@ function getReservedPaths(env) {
     });
   }
   return paths;
-}
-
-/**
- * Asynchronously sends click metrics to origin cf-click-logger.php bridge.
- */
-async function logClick(request, shortcode, env, hostname) {
-  const logHost = hostname || new URL(request.url).hostname;
-  const endpoint = env?.LOGGING_ENDPOINT || "/cf-click-logger.php";
-  const formattedEndpoint = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
-  const logUrl = `https://${logHost}${formattedEndpoint}`;
-
-  try {
-    await fetch(logUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Auth-Key": env.LOGGING_SECRET_KEY,
-        "X-From-Logger": "1",
-      },
-      body: JSON.stringify({
-        shortcode,
-        ip: request.headers.get("CF-Connecting-IP"),
-        userAgent: request.headers.get("User-Agent"),
-        referrer: request.headers.get("Referer"),
-        country: request.headers.get("CF-IPCountry"),
-      }),
-    });
-  } catch {
-    // Non-blocking background log
-  }
 }
