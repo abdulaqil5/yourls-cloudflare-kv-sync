@@ -2,7 +2,7 @@
 /**
  * Cloudflare Fast File-Buffer Click Logger for YOURLS (Queue System)
  * 
- * Non-blocking file append buffer that defers MySQL writes to a 1-minute cron job.
+ * Non-blocking file append buffer that defers MySQL writes to a scheduled cron job (e.g. every 5 minutes).
  * Drops origin server wall time from ~150 ms down to < 0.5 ms.
  *
  * Copy this file to your YOURLS root folder (next to yourls-loader.php).

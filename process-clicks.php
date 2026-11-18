@@ -2,7 +2,7 @@
 /**
  * Cron Batch Processor for Buffered Clicks (YOURLS Queue System)
  *
- * Runs once every minute via cron job.
+ * Runs once every 5 minutes (or 1 minute) via cron job.
  * Groups click counts in memory and inserts bulk logs into MySQL.
  *
  * Usage:

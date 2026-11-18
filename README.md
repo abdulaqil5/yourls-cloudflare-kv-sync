@@ -18,7 +18,7 @@
 
 > **Personal Project Note:** This project was originally designed for a personal YOURLS setup to eliminate origin server and database overhead, accelerate global redirect speeds to single-digit milliseconds, and maintain accurate click analytics.
 >
-> **Notice on Customizations & Contributions:** This repository is maintained specifically for personal production requirements and does not accept pull requests or feature requests. If you would like to make modifications, customize error templates, or adapt the code for your own setup, **please fork the repository and make any changes in your own fork**. Feel free to adapt and build upon it under the [MIT License](LICENSE)!
+> **Notice on Customizations & Contributions:** This repository is maintained specifically for personal use and does not accept pull requests or feature requests. If you would like to make modifications, customize error templates, or adapt the code for your own setup, **please fork the repository and make any changes in your own fork**. Feel free to adapt and build upon it under the [MIT License](LICENSE)!
 
 ---
 
@@ -56,7 +56,7 @@
 - **Double-Layer KV Datacenter Caching**: Added `{ cacheTtl: 300 }` to `env.YOURLS_LINKS.get()` to cache KV lookups directly in the local Cloudflare data center for 5 minutes during Tier 1 Cache API misses.
 - **Instant Root HEAD Fast-Path**: Added instant 0.01ms HTTP 200 responses for `HEAD /` monitoring pings, eliminating cold-start CPU spikes from uptime monitors (e.g. UptimeRobot, Pingdom).
 - **Asynchronous File-Buffered Queue (`cf-queue-logger.php`)**: Replaced direct MySQL connection writes with lock-free atomic file append (`cf-clicks/click_buffer.log`), slashing origin execution wall time from ~150 ms down to **< 0.5 ms**.
-- **1-Minute Scheduled Batch Processor (`process-clicks.php`)**: Rotates the buffer atomically, aggregates click counts in memory (1 UPDATE query per keyword), and performs bulk multi-row inserts into `yourls_log` (500 rows per batch), eliminating database lock contention during traffic surges.
+- **Scheduled Batch Processor (`process-clicks.php`)**: Rotates the buffer atomically, aggregates click counts in memory (1 UPDATE query per keyword), and performs bulk multi-row inserts into `yourls_log` (500 rows per batch), eliminating database lock contention during traffic surges. Runs on a flexible schedule (e.g. every 5 minutes).
 - **Clean Self-Contained Error Templates**: Redesigned 404 and 5xx error pages to be completely self-contained with modern, responsive light/dark mode CSS and SVG icons (zero external trackers or third-party assets).
 - **Production Minified Worker (`worker.min.js`)**: Included a single-line minified build (~4.5 KB) for direct copy-paste deployment via Cloudflare Dashboard console.
 
@@ -68,7 +68,7 @@
 |---|---|---|---|
 | **Redirect Latency** | `150ms – 600ms+` | `5ms – 25ms` | **`5ms – 25ms`** (nearest edge PoP) |
 | **Origin Logging Wall Time** | 150ms – 400ms (blocking) | ~150ms (async via `waitUntil`) | **< 0.5ms** (non-blocking file buffer) |
-| **Database Connections per Click** | 1 connection per click | 1 connection per click | **0 connections** (handled by 1-min cron) |
+| **Database Connections per Click** | 1 connection per click | 1 connection per click | **0 connections** (handled by cron batch job) |
 | **Database Lock Contention** | High during traffic surges | High during traffic surges | **Zero** (grouped updates + bulk multi-row inserts) |
 | **KV Read Operations** | N/A | Reduced via Edge Cache | **Minimized** (Edge Cache API + KV datacenter cache) |
 | **Uptime Monitor Cold Starts** | Wakes full PHP/MySQL | Wakes Worker & KV | **0.01ms instant 200 OK** on `HEAD /` |
@@ -101,7 +101,7 @@ flowchart TD
     AsyncQueue -.->|ctx.waitUntil POST /cf-queue-logger.php| FileBuffer[cf-queue-logger.php: <0.5ms File Append]:::origin
     FileBuffer -->|Append JSON line| LogFile[(cf-clicks/click_buffer.log)]:::origin
     
-    CronJob([1-Minute Cron Job]) -->|Executes| BatchProcessor[process-clicks.php]:::origin
+    CronJob([Scheduled Cron Job: e.g. 5m]) -->|Executes| BatchProcessor[process-clicks.php]:::origin
     BatchProcessor -->|Atomic Rename & Read| LogFile
     BatchProcessor -->|Grouped UPDATE + Bulk Multi-Row INSERT| DB[(YOURLS MySQL DB)]:::origin
     
@@ -118,7 +118,7 @@ flowchart TD
 - **Two-Tier Multi-Layer Caching:** Utilizes Cloudflare's [Cache API](https://developers.cloudflare.com/workers/runtime-apis/cache/) (`caches.default`) in front of [Workers KV](https://developers.cloudflare.com/kv/get-started/) with `{ cacheTtl: 300 }` edge data center caching.
 - **Negative Caching (404 Flood Protection):** Non-existent keywords and scanner requests are cached as `404` at the edge for 5 minutes, preventing automated scrapers from overwhelming KV quotas.
 - **Lock-Free Origin File Buffer:** The Worker dispatches background clicks to `cf-queue-logger.php`, which performs an atomic file append into `cf-clicks/click_buffer.log` in **< 0.5 ms** with zero database connections opened.
-- **Batch Processing Cron Engine:** `process-clicks.php` runs every minute, rotates the log file atomically, aggregates duplicate keyword clicks in memory, and performs bulk multi-row inserts (500 rows per batch) into MySQL.
+- **Batch Processing Cron Engine:** `process-clicks.php` runs on schedule (recommended every 5 minutes or 1 minute), rotates the log file atomically, aggregates duplicate keyword clicks in memory, and performs bulk multi-row inserts (500 rows per batch) into MySQL.
 - **UTM Campaign and Query Passthrough:** Appends incoming URL parameters (e.g. `?utm_medium=social&ref=newsletter`) to the destination URL automatically while removing Cloudflare Turnstile/Challenge parameters.
 - **Built-in Bot Management Filtering:** Ignores uptime monitors, crawler bots, and security scanners using [Cloudflare Bot Management categories](https://developers.cloudflare.com/bots/concepts/bot/) so analytics reflect real human engagements.
 - **Social Media Preview Handler:** Returns `200 OK` to preview scrapers (WhatsApp, Telegram, Discord, Facebook, Twitter, LinkedIn) to ensure rich link preview snippets and OpenGraph meta tags parse properly.
@@ -144,7 +144,7 @@ yourls-cloudflare-kv-sync/
 │   ├── wrangler.toml          # Wrangler configuration template & KV bindings
 │   └── .dev.vars.example      # Local development environment variable template
 ├── cf-queue-logger.php        # Fast zero-database file buffer logger (Queue Endpoint)
-├── process-clicks.php         # 1-minute cron batch processor (Bulk MySQL Inserts)
+├── process-clicks.php         # Batch cron processor (Bulk MySQL Inserts, every 5m)
 ├── cf-click-logger.php        # Synchronous direct database logger (Fallback Endpoint)
 ├── cf-clicks/
 │   └── .htaccess              # Apache directive blocking public web access to log files
@@ -209,11 +209,11 @@ yourls-cloudflare-kv-sync/
 
 ### Step 3: Configure Cron Job (Queue System)
 
-To process buffered clicks from `cf-clicks/click_buffer.log` into MySQL, set up a cron job to run once every minute:
+To process buffered clicks from `cf-clicks/click_buffer.log` into MySQL, set up a cron job to run once every 5 minutes (or every minute, depending on your traffic):
 
 #### In cPanel:
 1. Go to **cPanel** → **Cron Jobs**.
-2. Select frequency: **Once Per Minute (`* * * * *`)**.
+2. Select frequency: **Once Every 5 Minutes (`*/5 * * * *`)** (or **Once Per Minute (`* * * * *`)**).
 3. Command:
    ```bash
    /usr/local/bin/php /home/USERNAME/public_html/process-clicks.php >/dev/null 2>&1
@@ -365,7 +365,7 @@ Incoming Request: https://yourdomain.com/{path}
 <details>
 <summary><b>Why use the Queue System (cf-queue-logger.php) instead of direct logging?</b></summary>
 <br>
-Direct logging opens a PHP process and a MySQL connection on every click. During viral traffic spikes, hundreds of concurrent database connections can lock tables and exhaust server memory. The Queue System simply appends a ~220-byte JSON line to a file in < 0.5 ms without touching MySQL, and the 1-minute cron processor commits all clicks in bulk with grouped queries.
+Direct logging opens a PHP process and a MySQL connection on every click. During viral traffic spikes, hundreds of concurrent database connections can lock tables and exhaust server memory. The Queue System simply appends a ~220-byte JSON line to a file in < 0.5 ms without touching MySQL, and the scheduled cron processor (e.g. every 5 minutes) commits all clicks in bulk with grouped queries.
 </details>
 
 <details>
@@ -403,7 +403,7 @@ No. Because links are stored in KV and Edge Cache, 301 redirects continue to fun
 
 ## Contributions and Forking
 
-This project is maintained for personal use and production requirements. **Pull requests and feature requests are not accepted.**
+This project is maintained for personal use. **Pull requests and feature requests are not accepted.**
 
 If you need different behavior, alternative templates, or additional features, **please fork the repository and make the changes in your own fork**. You are completely free to modify, customize, and distribute your own version under the terms of the [MIT License](LICENSE).
 

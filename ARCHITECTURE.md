@@ -37,7 +37,7 @@
         │
         │ (~0.5 ms execution time, 0 MySQL connections opened)
         ▼
-[ 1-Minute Cron Job: process-clicks.php ]
+[ Scheduled Cron Job: process-clicks.php (e.g. 5m) ]
   ├── Atomic Rename: click_buffer.log -> click_processing_{time}.log
   ├── In-Memory Deduplication: Group clicks per shortcode
   ├── Single-Query UPDATE clicks per shortcode (eliminates row-lock contention)
